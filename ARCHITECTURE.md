@@ -217,12 +217,7 @@ Los ZIPs independientes se generan con:
 python tools/build_lambdas.py all
 ```
 
-Consulta `deploy/lambdas/README.md` para variables, IAM y arquitectura del
-runtime.
-
-La guía completa del pipeline EC2 Collector → Kinesis → Lambda Processor →
-RDS/S3, incluyendo la estrategia recomendada para el dashboard, está en
-[`docs/AWS_DEPLOYMENT.md`](docs/AWS_DEPLOYMENT.md).
+Consulta `deploy/lambdas/README.md` para un resumen de los artefactos Lambda.
 
 ## Plan de desarrollo
 
@@ -246,3 +241,319 @@ RDS/S3, incluyendo la estrategia recomendada para el dashboard, está en
 - **Dos EC2 durante la evaluación**: collector y dashboard se separan para
   evitar que la interfaz afecte a la captura, pero se omite ALB para simplificar.
 - **Schema común en Kinesis**: desacopla el modo de ingesta del procesamiento, permite añadir fuentes nuevas sin tocar el downstream.
+
+---
+
+## Despliegue temporal en AWS
+
+Esta guía está orientada a una práctica universitaria que solo permanecerá
+activa durante su evaluación. Prioriza un despliegue sencillo, económico y
+fácil de demostrar.
+
+### Alcance y simplificaciones
+
+- Una EC2 pública para el collector y otra para el dashboard.
+- VPC predeterminada o sencilla, sin NAT Gateway.
+- RDS PostgreSQL privado, Single-AZ y de tamaño mínimo.
+- Conexión directa de Lambda y dashboard a RDS, sin RDS Proxy.
+- Dashboard accesible mediante `http://<ec2-public-ip>:8501`, sin ALB.
+- Credenciales en variables de entorno no versionadas.
+- Logs básicos de CloudWatch, sin observabilidad avanzada.
+
+Para producción convendría añadir Secrets Manager, RDS Proxy, ALB con HTTPS,
+subredes privadas y mayor observabilidad.
+
+### Prerrequisitos
+
+- Una única región AWS para todos los recursos.
+- AWS CLI configurada.
+- Python 3.12 para construir las Lambdas.
+- Una VPC; puede utilizarse la predeterminada.
+- Tu IP pública y, si procede, la del evaluador.
+
+Variables utilizadas en los ejemplos:
+
+```bash
+export AWS_REGION=eu-west-1
+export KINESIS_STREAM=crypto-arbitrage-ticks
+export RAW_BUCKET=crypto-arbitrage-raw-<account-id>
+```
+
+### Red y security groups
+
+Utiliza la misma VPC para ambas EC2, Lambda y RDS. RDS debe permanecer privado.
+
+| Security group | Entrada | Uso |
+|---|---|---|
+| `sg-collector` | TCP 22 únicamente desde tu IP | EC2 Collector |
+| `sg-dashboard` | TCP 22 y 8501 desde IPs autorizadas | EC2 Dashboard |
+| `sg-lambda` | Ninguna | Lambda Processor |
+| `sg-rds` | TCP 5432 desde `sg-dashboard` y `sg-lambda` | RDS PostgreSQL |
+
+Mantén la salida predeterminada permitida. No abras SSH, PostgreSQL ni
+Streamlit a `0.0.0.0/0`.
+
+Conecta Lambda a la VPC para alcanzar RDS y crea un gateway endpoint de S3.
+Este endpoint es gratuito y evita desplegar un NAT Gateway.
+
+### Kinesis Data Streams
+
+Crea `crypto-arbitrage-ticks` con:
+
+- Modo provisionado y un shard.
+- Retención de 24 horas.
+- Cifrado administrado por AWS.
+
+Los productores utilizan `coin` como partition key, conservando el orden por
+moneda.
+
+### S3
+
+Crea un bucket privado con acceso público bloqueado. El processor escribe:
+
+```text
+s3://<bucket>/raw_ticks/YYYY/MM/DD/<batch-hash>.json
+```
+
+Para esta práctica utiliza SSE-S3, desactiva versionado y configura una regla
+lifecycle que elimine objetos después de 7 días.
+
+### RDS PostgreSQL
+
+1. Crea una instancia pequeña, Single-AZ y privada en la misma VPC.
+2. Desactiva protección contra borrado y usa una retención de backups corta.
+3. Crea la base de datos y el usuario de aplicación.
+4. Ejecuta [`schema.sql`](schema.sql).
+5. Permite conexiones desde `sg-dashboard` y `sg-lambda`.
+
+El DSN apunta directamente al endpoint RDS:
+
+```text
+postgresql://<user>:<password>@<rds-endpoint>:5432/<database>
+```
+
+Puede almacenarse como variable de entorno de Lambda y en el archivo privado
+de la EC2 Dashboard. No incluyas el DSN en Git.
+
+### Construcción de Lambdas
+
+Desde la raíz:
+
+```bash
+python tools/build_lambdas.py all
+```
+
+Genera artefactos Linux para Lambda Python 3.12 x86_64:
+
+```text
+dist/lambdas/poller.zip
+dist/lambdas/processor.zip
+```
+
+Para ARM64:
+
+```bash
+python tools/build_lambdas.py all --platform manylinux2014_aarch64
+```
+
+#### Lambda Processor
+
+| Campo | Valor |
+|---|---|
+| Runtime | Python 3.12 |
+| Handler | `crypto_arbitrage_aws.lambdas.processor.lambda_handler` |
+| Memoria inicial | 512 MB |
+| Timeout inicial | 60 segundos |
+| VPC | Subredes con acceso a RDS y al endpoint S3 |
+
+Variables:
+
+```text
+DB_DSN=postgresql://...@<rds-endpoint>:5432/...
+S3_BUCKET=<raw-bucket>
+MAX_PRICE_AGE_SECONDS=120
+ARBITRAGE_THRESHOLD_PCT=0.3
+```
+
+Su rol necesita permisos básicos de logs y VPC, lectura del stream Kinesis y
+`s3:PutObject` sobre `arn:aws:s3:::<raw-bucket>/raw_ticks/*`.
+
+Configura el event source mapping con:
+
+- Starting position `LATEST`.
+- Batch size `100`.
+- Maximum batching window `5` segundos.
+- `BisectBatchOnFunctionError` activado.
+- Número máximo de reintentos limitado.
+
+#### Lambda Poller opcional
+
+El flujo principal utiliza el collector WebSocket. El Poller REST puede
+desplegarse como fallback:
+
+| Campo | Valor |
+|---|---|
+| Handler | `crypto_arbitrage_aws.lambdas.poller.lambda_handler` |
+| Variable | `KINESIS_STREAM=<stream-name>` |
+| IAM | `kinesis:PutRecords` sobre el stream |
+| Trigger | EventBridge Scheduler |
+
+### EC2 Collector
+
+Asigna un instance profile que permita `kinesis:PutRecords` únicamente sobre
+el stream de la práctica. No guardes access keys en la instancia.
+
+Instalación en Amazon Linux:
+
+```bash
+sudo dnf install -y git python3.12
+sudo mkdir -p /opt/crypto-arbitrage
+sudo chown ec2-user:ec2-user /opt/crypto-arbitrage
+git clone <repository-url> /opt/crypto-arbitrage/app
+cd /opt/crypto-arbitrage/app
+python3.12 -m venv .venv
+.venv/bin/pip install ".[collector]"
+```
+
+Archivo `/etc/crypto-arbitrage/collector.env`:
+
+```text
+AWS_REGION=eu-west-1
+KINESIS_STREAM=crypto-arbitrage-ticks
+BATCH_INTERVAL=30
+
+# BINANCE_WS_URL=wss://proxy.example/stream
+# KRAKEN_WS_URL=wss://...
+# COINBASE_WS_URL=wss://...
+# BYBIT_WS_URL=wss://...
+```
+
+Servicio `/etc/systemd/system/crypto-arbitrage-collector.service`:
+
+```ini
+[Unit]
+Description=Crypto Arbitrage WebSocket Collector
+After=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/opt/crypto-arbitrage/app
+EnvironmentFile=/etc/crypto-arbitrage/collector.env
+ExecStart=/opt/crypto-arbitrage/app/.venv/bin/crypto-arbitrage-ws
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now crypto-arbitrage-collector
+journalctl -u crypto-arbitrage-collector -f
+```
+
+### EC2 Dashboard
+
+La segunda EC2 no necesita permisos IAM de Kinesis.
+
+```bash
+sudo dnf install -y git python3.12
+sudo mkdir -p /opt/crypto-arbitrage
+sudo chown ec2-user:ec2-user /opt/crypto-arbitrage
+git clone <repository-url> /opt/crypto-arbitrage/app
+cd /opt/crypto-arbitrage/app
+python3.12 -m venv .venv
+.venv/bin/pip install ".[dashboard]"
+```
+
+Archivo `/etc/crypto-arbitrage/dashboard.env`:
+
+```text
+DB_TYPE=postgres
+DB_DSN=postgresql://<user>:<password>@<rds-endpoint>:5432/<database>
+REFRESH_INTERVAL=30
+ARBITRAGE_THRESHOLD_PCT=0.5
+```
+
+Servicio `/etc/systemd/system/crypto-arbitrage-dashboard.service`:
+
+```ini
+[Unit]
+Description=Crypto Arbitrage Streamlit Dashboard
+After=network-online.target
+
+[Service]
+Type=simple
+User=ec2-user
+WorkingDirectory=/opt/crypto-arbitrage/app
+EnvironmentFile=/etc/crypto-arbitrage/dashboard.env
+ExecStart=/opt/crypto-arbitrage/app/.venv/bin/crypto-arbitrage-dashboard --server.address=0.0.0.0 --server.port=8501
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now crypto-arbitrage-dashboard
+journalctl -u crypto-arbitrage-dashboard -f
+```
+
+Accede mediante `http://<ec2-public-ip>:8501` desde una IP permitida.
+
+### Configuración
+
+| Componente | Variable | Obligatoria | Descripción |
+|---|---|---:|---|
+| EC2 Collector | `KINESIS_STREAM` | Sí en AWS | Stream de salida |
+| EC2 Collector | `BATCH_INTERVAL` | No | Segundos por batch; default `30` |
+| EC2 Collector | `*_WS_URL` | No | Overrides geográficos de WebSocket |
+| Lambda Processor | `DB_DSN` | Sí | DSN del endpoint RDS |
+| Lambda Processor | `S3_BUCKET` | Sí | Bucket de raw ticks |
+| Lambda Processor | `MAX_PRICE_AGE_SECONDS` | No | Frescura máxima; default `120` |
+| Lambda Processor | `ARBITRAGE_THRESHOLD_PCT` | No | Spread mínimo; default `0.3` |
+| EC2 Dashboard | `DB_TYPE` | Sí | Usar `postgres` |
+| EC2 Dashboard | `DB_DSN` | Sí | DSN del endpoint RDS |
+| EC2 Dashboard | `REFRESH_INTERVAL` | No | Refresco; default `30` |
+
+### Validación end-to-end
+
+1. Comprueba los logs del collector con `journalctl`.
+2. Verifica métricas entrantes de Kinesis.
+3. Verifica invocaciones exitosas de Lambda Processor.
+4. Comprueba objetos bajo `raw_ticks/` en S3.
+5. Consulta `latest_prices` y `arbitrage_opportunities` en PostgreSQL.
+6. Abre el dashboard desde una IP permitida.
+
+### Orden de despliegue
+
+1. VPC, endpoint S3 y security groups.
+2. S3.
+3. RDS PostgreSQL y schema.
+4. Kinesis.
+5. Lambda Processor y event source mapping.
+6. EC2 Collector.
+7. EC2 Dashboard.
+8. Validación end-to-end.
+
+### Apagado tras la evaluación
+
+1. Elimina event source mapping y Lambda.
+2. Elimina Kinesis Data Stream.
+3. Elimina RDS sin snapshot final si no necesitas los datos.
+4. Elimina ambas EC2 y sus volúmenes EBS.
+5. Vacía y elimina el bucket S3.
+6. Elimina endpoint S3 y security groups de la práctica.
+
+Comprueba que no quedan Elastic IPs, snapshots o volúmenes sin asociar.
+
+### Referencias AWS
+
+- [Procesar Kinesis Data Streams con Lambda](https://docs.aws.amazon.com/lambda/latest/dg/services-kinesis-create.html)
+- [Manejo de fallos en batches Kinesis/Lambda](https://docs.aws.amazon.com/lambda/latest/dg/kinesis-on-failure-destination.html)
+- [Acceso de Lambda a recursos VPC](https://docs.aws.amazon.com/lambda/latest/dg/configuration-vpc.html)
+- [Gateway endpoints para S3](https://docs.aws.amazon.com/vpc/latest/privatelink/vpc-endpoints-s3.html)

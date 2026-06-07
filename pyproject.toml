@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "crypto-arbitrage-aws"
 version = "0.1.0"
 description = "Crypto arbitrage collector and processor for local and AWS deployments"
-readme = "ARCHITECTURE.md"
+readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 

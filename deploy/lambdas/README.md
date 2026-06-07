@@ -38,4 +38,5 @@ RDS Proxy queda como mejora para un despliegue de producción. El processor
 nunca usa SQLite ni archivos locales cuando se invoca mediante su adaptador
 Lambda.
 
-La guía completa se encuentra en [`docs/AWS_DEPLOYMENT.md`](../../docs/AWS_DEPLOYMENT.md).
+La guía completa se encuentra en
+[`ARCHITECTURE.md`](../../ARCHITECTURE.md#despliegue-temporal-en-aws).
