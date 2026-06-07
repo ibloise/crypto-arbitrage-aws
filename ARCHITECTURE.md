@@ -459,6 +459,7 @@ COINBASE_PRODUCTS_REST_URL=https://api.exchange.coinbase.com
 COINBASE_PRICE_REST_URL=https://api.coinbase.com
 BYBIT_REST_URL=https://api.bybit.com
 ENABLED_EXCHANGES=binance,kraken,coinbase,bybit
+LOG_LEVEL=INFO
 ```
 
 Los valores mostrados son los defaults. Pueden apuntarse a proxies o endpoints
@@ -466,6 +467,8 @@ alternativos sin modificar el código. Si CoinGecko falla se utiliza un universo
 local de respaldo; si falla la disponibilidad o el precio de un exchange, el
 Poller continúa publicando ticks de los proveedores restantes.
 `ENABLED_EXCHANGES` permite excluir proveedores antes de realizar peticiones.
+Con `LOG_LEVEL=DEBUG`, el Poller registra URL final, parámetros, duración,
+status HTTP y errores de respuesta.
 
 ### EC2 Collector
 
@@ -495,7 +498,18 @@ BATCH_INTERVAL=30
 # KRAKEN_WS_URL=wss://...
 # COINBASE_WS_URL=wss://...
 # BYBIT_WS_URL=wss://...
+LOG_LEVEL=INFO
+WS_OPEN_TIMEOUT=10
+WS_CLOSE_TIMEOUT=10
+WS_PING_INTERVAL=20
+WS_PING_TIMEOUT=20
+BATCH_PROCESSING_TIMEOUT=60
 ```
+
+Los clientes WebSocket se reconectan de forma independiente. Mensajes
+malformados y errores de publicación de batches se registran y aíslan para que
+no detengan los demás exchanges. Usa `LOG_LEVEL=DEBUG` para incluir trazas de
+excepción y payloads de suscripción.
 
 Servicio `/etc/systemd/system/crypto-arbitrage-collector.service`:
 
@@ -585,7 +599,10 @@ Accede mediante `http://<ec2-public-ip>:8501` desde una IP permitida.
 | EC2 Collector | `KINESIS_STREAM` | Sí en AWS | Stream de salida |
 | EC2 Collector | `BATCH_INTERVAL` | No | Segundos por batch; default `30` |
 | EC2 Collector | `*_WS_URL` | No | Overrides geográficos de WebSocket |
+| EC2 Collector | `WS_*_TIMEOUT` | No | Timeouts de conexión y salud WebSocket |
+| EC2 Collector | `BATCH_PROCESSING_TIMEOUT` | No | Límite de publicación/proceso por batch |
 | Lambda Poller | `*_REST_URL` | No | Overrides de endpoints REST |
+| Poller/Collector | `LOG_LEVEL` | No | `INFO` por defecto; usar `DEBUG` para diagnóstico |
 | Servicios PostgreSQL | `DB_TYPE` | Sí en AWS | Usar `postgres` |
 | Servicios PostgreSQL | `DB_HOST` | Sí | Endpoint RDS |
 | Servicios PostgreSQL | `DB_PORT` | No | Puerto; default `5432` |

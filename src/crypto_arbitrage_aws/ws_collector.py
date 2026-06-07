@@ -7,6 +7,7 @@ The base client owns connection lifecycle and emits contract dictionaries.
 
 import asyncio
 import json
+import logging
 import os
 from abc import ABC, abstractmethod
 from datetime import datetime
@@ -21,7 +22,13 @@ from .poller import KRAKEN_SYMBOL_MAP, get_top30_symbols, get_tradeable_coins
 KINESIS_STREAM = os.environ.get("KINESIS_STREAM", "")
 BATCH_INTERVAL = int(os.environ.get("BATCH_INTERVAL", "30"))
 RECONNECT_DELAY = 5
+WS_OPEN_TIMEOUT = int(os.environ.get("WS_OPEN_TIMEOUT", "10"))
+WS_CLOSE_TIMEOUT = int(os.environ.get("WS_CLOSE_TIMEOUT", "10"))
+WS_PING_INTERVAL = int(os.environ.get("WS_PING_INTERVAL", "20"))
+WS_PING_TIMEOUT = int(os.environ.get("WS_PING_TIMEOUT", "20"))
+BATCH_PROCESSING_TIMEOUT = int(os.environ.get("BATCH_PROCESSING_TIMEOUT", "60"))
 KRAKEN_TO_STD = {value: key for key, value in KRAKEN_SYMBOL_MAP.items()}
+LOGGER = logging.getLogger(__name__)
 
 RawMessage = dict[str, Any] | list[Any] | str
 TickEmitter = Callable[[dict[str, Any]], Awaitable[None]]
@@ -43,27 +50,61 @@ class ExchangeTickerClient(ABC):
         self.emit = emit
         self.reconnect_seconds = reconnect_seconds
         self.ws_url = ws_url or os.environ.get(self.ws_url_env, self.ws_url)
+        LOGGER.info(
+            "WebSocket client configured exchange=%s url=%s tracked_coins=%d "
+            "override_env=%s overridden=%s",
+            self.name,
+            self.connection_url,
+            len(self.coins),
+            self.ws_url_env,
+            bool(os.environ.get(self.ws_url_env)),
+        )
 
     @property
     def connection_url(self) -> str:
         return self.ws_url
 
     async def run_forever(self) -> None:
+        attempt = 0
         while True:
+            attempt += 1
             try:
+                LOGGER.info(
+                    "WebSocket connecting exchange=%s attempt=%d url=%s",
+                    self.name,
+                    attempt,
+                    self.connection_url,
+                )
                 await self._connect_and_consume()
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                print(
-                    f"[{self.name}] disconnected ({exc}), "
-                    f"reconnecting in {self.reconnect_seconds}s..."
+                LOGGER.warning(
+                    "WebSocket disconnected exchange=%s attempt=%d url=%s "
+                    "error_type=%s error=%s reconnect_seconds=%d",
+                    self.name,
+                    attempt,
+                    self.connection_url,
+                    type(exc).__name__,
+                    exc,
+                    self.reconnect_seconds,
+                    exc_info=LOGGER.isEnabledFor(logging.DEBUG),
                 )
                 await asyncio.sleep(self.reconnect_seconds)
 
     async def _connect_and_consume(self) -> None:
-        async with connect(self.connection_url) as websocket:
-            print(f"[{self.name}] connected")
+        async with connect(
+            self.connection_url,
+            open_timeout=WS_OPEN_TIMEOUT,
+            close_timeout=WS_CLOSE_TIMEOUT,
+            ping_interval=WS_PING_INTERVAL,
+            ping_timeout=WS_PING_TIMEOUT,
+        ) as websocket:
+            LOGGER.info(
+                "WebSocket connected exchange=%s url=%s",
+                self.name,
+                self.connection_url,
+            )
             await self._subscribe(websocket)
             background_tasks = [
                 asyncio.create_task(coroutine)
@@ -71,9 +112,20 @@ class ExchangeTickerClient(ABC):
             ]
             try:
                 async for raw_message in websocket:
-                    tick = self.normalize_message(self.decode_message(raw_message))
-                    if tick is not None:
-                        await self.emit(tick)
+                    try:
+                        tick = self.normalize_message(self.decode_message(raw_message))
+                        if tick is not None:
+                            await self.emit(tick)
+                    except Exception as exc:
+                        LOGGER.warning(
+                            "WebSocket message rejected exchange=%s error_type=%s "
+                            "error=%s raw=%r",
+                            self.name,
+                            type(exc).__name__,
+                            exc,
+                            str(raw_message)[:500],
+                            exc_info=LOGGER.isEnabledFor(logging.DEBUG),
+                        )
             finally:
                 for task in background_tasks:
                     task.cancel()
@@ -81,7 +133,15 @@ class ExchangeTickerClient(ABC):
                     await asyncio.gather(*background_tasks, return_exceptions=True)
 
     async def _subscribe(self, websocket: ClientConnection) -> None:
-        for message in self.subscription_messages():
+        messages = self.subscription_messages()
+        LOGGER.info(
+            "WebSocket subscribing exchange=%s messages=%d tracked_coins=%d",
+            self.name,
+            len(messages),
+            len(self.coins),
+        )
+        for message in messages:
+            LOGGER.debug("WebSocket subscription exchange=%s payload=%s", self.name, message)
             await websocket.send(json.dumps(message))
 
     @staticmethod
@@ -243,15 +303,37 @@ class TickBatchProcessor:
                 continue
 
             timestamp = datetime.now().strftime("%H:%M:%S")
-            print(
-                f"[{timestamp}] {len(ticks)} ticks received "
-                f"in last {self.interval}s",
-                end=" → ",
+            LOGGER.info(
+                "WebSocket batch ready timestamp=%s ticks=%d interval_seconds=%d "
+                "destination=%s",
+                timestamp,
+                len(ticks),
+                self.interval,
+                self.kinesis_stream or "local",
             )
-            if self.kinesis_stream:
-                self._publish_to_kinesis(ticks)
-            else:
-                self._process_locally(ticks)
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(self._handle_ticks, ticks),
+                    timeout=BATCH_PROCESSING_TIMEOUT,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                LOGGER.error(
+                    "WebSocket batch failed ticks=%d destination=%s error_type=%s "
+                    "error=%s; collector continues",
+                    len(ticks),
+                    self.kinesis_stream or "local",
+                    type(exc).__name__,
+                    exc,
+                    exc_info=LOGGER.isEnabledFor(logging.DEBUG),
+                )
+
+    def _handle_ticks(self, ticks: list[dict[str, Any]]) -> None:
+        if self.kinesis_stream:
+            self._publish_to_kinesis(ticks)
+        else:
+            self._process_locally(ticks)
 
     def _drain_queue(self) -> list[dict[str, Any]]:
         ticks = []
@@ -270,7 +352,11 @@ class TickBatchProcessor:
     def _publish_to_kinesis(self, ticks: list[dict[str, Any]]) -> None:
         kinesis = self._get_kinesis_client()
         publish_ticks(kinesis, self.kinesis_stream, ticks)
-        print(f"published to Kinesis stream '{self.kinesis_stream}'")
+        LOGGER.info(
+            "WebSocket batch published stream=%s ticks=%d",
+            self.kinesis_stream,
+            len(ticks),
+        )
 
     @staticmethod
     def _get_kinesis_client():
@@ -311,25 +397,48 @@ def build_clients(
     coins: list[str],
     emit: TickEmitter,
 ) -> list[ExchangeTickerClient]:
-    return [
+    clients = [
         BinanceTickerClient(coins, emit),
         KrakenTickerClient(coins, emit),
         CoinbaseTickerClient(coins, emit),
         BybitTickerClient(coins, emit),
     ]
+    enabled_value = os.environ.get("ENABLED_EXCHANGES")
+    if not enabled_value:
+        return clients
+    enabled = {
+        exchange.strip().lower()
+        for exchange in enabled_value.split(",")
+        if exchange.strip()
+    }
+    selected = [client for client in clients if client.name in enabled]
+    LOGGER.info(
+        "WebSocket exchanges selected enabled=%s selected=%s",
+        sorted(enabled),
+        [client.name for client in selected],
+    )
+    return selected
 
 
 async def collect() -> None:
-    print("=== Fetching coin universe (once) ===")
+    LOGGER.info("Fetching WebSocket coin universe")
     coins = get_tradeable_coins(get_top30_symbols())
-    print(f"Tracking {len(coins)} coins: {coins}\n")
+    if not coins:
+        raise RuntimeError("No tradeable coins available for WebSocket collection")
+    LOGGER.info("WebSocket tracking coins count=%d coins=%s", len(coins), coins)
 
     queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
     clients = build_clients(coins, queue.put)
+    if not clients:
+        raise RuntimeError("No WebSocket exchanges enabled")
     processor = TickBatchProcessor(queue)
 
     mode = f"Kinesis stream '{KINESIS_STREAM}'" if KINESIS_STREAM else "local mode"
-    print(f"=== Starting WebSocket collectors - output: {mode} ===\n")
+    LOGGER.info(
+        "Starting WebSocket collector exchanges=%s output=%s",
+        [client.name for client in clients],
+        mode,
+    )
 
     await asyncio.gather(
         *(client.run_forever() for client in clients),

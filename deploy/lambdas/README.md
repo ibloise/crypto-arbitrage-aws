@@ -44,7 +44,7 @@ No necesita permisos IAM de Kinesis o S3.
 - Variable obligatoria: `KINESIS_STREAM`
 - Variables opcionales: `COINGECKO_REST_URL`, `BINANCE_REST_URL`,
   `KRAKEN_REST_URL`, `COINBASE_PRODUCTS_REST_URL`,
-  `COINBASE_PRICE_REST_URL`, `BYBIT_REST_URL`, `ENABLED_EXCHANGES`
+  `COINBASE_PRICE_REST_URL`, `BYBIT_REST_URL`, `ENABLED_EXCHANGES`, `LOG_LEVEL`
 - IAM: `kinesis:PutRecords` sobre el stream de destino
 - Trigger: EventBridge Scheduler
 
@@ -52,6 +52,8 @@ Las URLs públicas actuales son los valores por defecto. Si un proveedor no
 responde, el Poller continúa con los exchanges disponibles.
 `ENABLED_EXCHANGES=kraken,coinbase,bybit` permite excluir proveedores
 restringidos antes de realizar peticiones.
+Usa `LOG_LEVEL=DEBUG` temporalmente para registrar URL final, parámetros,
+duración y status HTTP de cada petición.
 
 ## Processor
 

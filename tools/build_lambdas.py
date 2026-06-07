@@ -29,6 +29,7 @@ SERVICES = {
             "contracts.py",
             "database.py",
             "kinesis.py",
+            "observability.py",
             "poller.py",
             "lambdas/__init__.py",
             "lambdas/config.py",

@@ -12,8 +12,10 @@ from crypto_arbitrage_aws.poller import (
 
 
 class FakeResponse:
-    def __init__(self, payload) -> None:
+    def __init__(self, payload, status_code: int = 200, text: str = "") -> None:
         self.payload = payload
+        self.status_code = status_code
+        self.text = text
 
     def raise_for_status(self) -> None:
         return None
@@ -133,6 +135,31 @@ def test_rest_endpoint_keeps_public_default(monkeypatch) -> None:
     assert BinanceRestClient().endpoint("api/v3/ticker/price") == (
         "https://api.binance.com/api/v3/ticker/price"
     )
+
+
+def test_rest_failure_log_includes_endpoint_status_and_response(
+    caplog,
+) -> None:
+    response = FakeResponse(
+        {"code": -1000},
+        status_code=451,
+        text="Service unavailable from a restricted location",
+    )
+    response.raise_for_status = lambda: (_ for _ in ()).throw(RuntimeError("blocked"))
+    client = BinanceRestClient(request_get=lambda *args, **kwargs: response)
+
+    with caplog.at_level("WARNING"):
+        try:
+            client.price("BTC")
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("HTTP failures must propagate")
+
+    assert "https://api.binance.com/api/v3/ticker/price" in caplog.text
+    assert "status=451" in caplog.text
+    assert "restricted location" in caplog.text
+    assert "error_type=RuntimeError" in caplog.text
 
 
 def test_coingecko_failure_uses_fallback_universe(monkeypatch) -> None:

@@ -1,7 +1,9 @@
+import logging
 import os
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from typing import Callable, Optional
 
 import requests
@@ -36,10 +38,16 @@ DEFAULT_COIN_UNIVERSE = [
 ]
 
 RequestGet = Callable[..., object]
+LOGGER = logging.getLogger(__name__)
 
 
 def _warn(message: str) -> None:
-    print(f"  [WARN] {message}")
+    LOGGER.warning(message)
+
+
+def _response_excerpt(response: object, limit: int = 500) -> str:
+    text = getattr(response, "text", "")
+    return str(text).replace("\n", " ")[:limit]
 
 
 class RestClient:
@@ -53,6 +61,13 @@ class RestClient:
     ) -> None:
         self.base_url = base_url or os.environ.get(self.base_url_env, self.base_url)
         self.request_get = request_get or requests.get
+        LOGGER.info(
+            "REST client configured client=%s base_url=%s override_env=%s overridden=%s",
+            self.__class__.__name__,
+            self.base_url,
+            self.base_url_env,
+            bool(os.environ.get(self.base_url_env)),
+        )
 
     def endpoint(self, path: str) -> str:
         return self.endpoint_for(self.base_url, path)
@@ -69,13 +84,39 @@ class RestClient:
         timeout: int,
         base_url: str | None = None,
     ):
-        response = self.request_get(
-            self.endpoint_for(base_url, path) if base_url else self.endpoint(path),
-            params=params,
-            timeout=timeout,
+        url = self.endpoint_for(base_url, path) if base_url else self.endpoint(path)
+        started = time.monotonic()
+        LOGGER.debug(
+            "REST request start url=%s params=%s timeout=%ss",
+            url,
+            params,
+            timeout,
         )
-        response.raise_for_status()
-        return response.json()
+        response = None
+        try:
+            response = self.request_get(url, params=params, timeout=timeout)
+            response.raise_for_status()
+            payload = response.json()
+            LOGGER.debug(
+                "REST request success url=%s status=%s elapsed_ms=%d",
+                url,
+                getattr(response, "status_code", "unknown"),
+                int((time.monotonic() - started) * 1000),
+            )
+            return payload
+        except Exception as exc:
+            LOGGER.warning(
+                "REST request failed url=%s params=%s status=%s elapsed_ms=%d "
+                "error_type=%s error=%s response=%r",
+                url,
+                params,
+                getattr(response, "status_code", "unavailable"),
+                int((time.monotonic() - started) * 1000),
+                type(exc).__name__,
+                exc,
+                _response_excerpt(response) if response is not None else "",
+            )
+            raise
 
 
 class CoinUniverseClient(RestClient):
@@ -270,15 +311,21 @@ def build_poller_plan(
                 coins = future.result()
                 available[client.name] = coins
                 reachable_clients.append(client)
+                LOGGER.info(
+                    "REST availability success exchange=%s coins=%d endpoint=%s",
+                    client.name,
+                    len(coins),
+                    client.base_url,
+                )
             except Exception as exc:
                 _warn(
-                    f"{client.name} availability unavailable, "
-                    f"continuing without it: {exc}"
+                    f"REST availability failed exchange={client.name} "
+                    f"endpoint={client.base_url} error_type={type(exc).__name__} "
+                    f"error={exc}; continuing without exchange"
                 )
 
-    print("Coins available per reachable exchange:")
     for name, coins in available.items():
-        print(f"  {name}: {len(coins)} coins")
+        LOGGER.info("REST exchange reachable exchange=%s coins=%d", name, len(coins))
 
     tradeable = (
         [coin for coin in top30 if all(coin in coins for coins in available.values())]
@@ -286,9 +333,11 @@ def build_poller_plan(
         else top30.copy()
     )
 
-    print(f"\nTop coins present on all reachable exchanges: {tradeable}")
-    print(
-        "Reachable exchanges: " + ", ".join(client.name for client in reachable_clients)
+    LOGGER.info(
+        "REST poller plan coins=%d exchanges=%s coin_symbols=%s",
+        len(tradeable),
+        [client.name for client in reachable_clients],
+        tradeable,
     )
 
     return PollerPlan(coins=tradeable, clients=reachable_clients)
@@ -340,7 +389,11 @@ def fetch_all_prices(
             try:
                 results[coin][client.name] = future.result()
             except Exception as exc:
-                _warn(f"{coin} @ {client.name}: {exc}")
+                _warn(
+                    f"REST price failed exchange={client.name} coin={coin} "
+                    f"endpoint={client.base_url} error_type={type(exc).__name__} "
+                    f"error={exc}"
+                )
                 results[coin][client.name] = None
 
     return results

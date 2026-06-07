@@ -1,3 +1,4 @@
+from crypto_arbitrage_aws.observability import configure_logging
 from crypto_arbitrage_aws.poller import (
     fetch_all_prices,
     get_top30_symbols,
@@ -6,6 +7,7 @@ from crypto_arbitrage_aws.poller import (
 
 
 def main() -> None:
+    configure_logging()
     print("=== Step 1: Top 30 coins by market cap ===")
     top30 = get_top30_symbols()
     print(top30)

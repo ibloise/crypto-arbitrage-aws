@@ -1,8 +1,10 @@
 import asyncio
+import json
 from datetime import datetime
 
 import pytest
 
+from crypto_arbitrage_aws import ws_collector
 from crypto_arbitrage_aws.ws_collector import (
     BinanceTickerClient,
     BybitTickerClient,
@@ -15,6 +17,35 @@ from crypto_arbitrage_aws.ws_collector import (
 
 async def discard_tick(_tick: dict) -> None:
     pass
+
+
+class EmptyWebSocket:
+    def __init__(self, messages: list | None = None) -> None:
+        self.sent = []
+        self.messages = iter(messages or [])
+
+    async def send(self, message: str) -> None:
+        self.sent.append(message)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return next(self.messages)
+        except StopIteration:
+            raise StopAsyncIteration
+
+
+class WebSocketContext:
+    def __init__(self, websocket: EmptyWebSocket) -> None:
+        self.websocket = websocket
+
+    async def __aenter__(self):
+        return self.websocket
+
+    async def __aexit__(self, exc_type, exc, traceback):
+        return None
 
 
 @pytest.mark.parametrize(
@@ -110,6 +141,14 @@ def test_build_clients_returns_one_client_per_exchange() -> None:
     ]
 
 
+def test_build_clients_respects_enabled_exchanges(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLED_EXCHANGES", "kraken,coinbase")
+
+    clients = build_clients(["BTC"], discard_tick)
+
+    assert [client.name for client in clients] == ["kraken", "coinbase"]
+
+
 @pytest.mark.parametrize(
     ("client_type", "env_name", "custom_url"),
     [
@@ -168,6 +207,57 @@ def test_explicit_socket_endpoint_takes_precedence_over_environment(monkeypatch)
     assert client.connection_url == "wss://explicit.example"
 
 
+def test_websocket_connection_uses_explicit_health_timeouts(monkeypatch) -> None:
+    calls = []
+    websocket = EmptyWebSocket()
+
+    def fake_connect(url: str, **kwargs):
+        calls.append((url, kwargs))
+        return WebSocketContext(websocket)
+
+    monkeypatch.setattr(ws_collector, "connect", fake_connect)
+    client = KrakenTickerClient(["BTC"], discard_tick)
+
+    asyncio.run(client._connect_and_consume())
+
+    assert calls == [
+        (
+            "wss://ws.kraken.com",
+            {
+                "open_timeout": ws_collector.WS_OPEN_TIMEOUT,
+                "close_timeout": ws_collector.WS_CLOSE_TIMEOUT,
+                "ping_interval": ws_collector.WS_PING_INTERVAL,
+                "ping_timeout": ws_collector.WS_PING_TIMEOUT,
+            },
+        )
+    ]
+    assert websocket.sent
+
+
+def test_malformed_websocket_message_does_not_block_next_tick(monkeypatch) -> None:
+    emitted = []
+
+    async def emit(tick: dict) -> None:
+        emitted.append(tick)
+
+    websocket = EmptyWebSocket(
+        [
+            json.dumps({"data": {"s": "BTCUSDT", "c": "not-a-number"}}),
+            json.dumps({"data": {"s": "BTCUSDT", "c": "100.25"}}),
+        ]
+    )
+    monkeypatch.setattr(
+        ws_collector,
+        "connect",
+        lambda *args, **kwargs: WebSocketContext(websocket),
+    )
+
+    asyncio.run(BinanceTickerClient(["BTC"], emit)._connect_and_consume())
+
+    assert len(emitted) == 1
+    assert emitted[0]["price_usd"] == 100.25
+
+
 def test_batch_processor_drains_queue() -> None:
     queue = asyncio.Queue()
     queue.put_nowait({"coin": "BTC"})
@@ -194,6 +284,38 @@ def test_kinesis_batch_processor_does_not_initialize_database(monkeypatch) -> No
 
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(processor.run_forever())
+
+
+def test_batch_failure_does_not_stop_websocket_processor(monkeypatch) -> None:
+    queue = asyncio.Queue()
+    queue.put_nowait({"coin": "BTC"})
+    processor = TickBatchProcessor(queue, interval=1, kinesis_stream="ticks")
+    calls = []
+
+    def fail_batch(ticks) -> None:
+        calls.append(ticks)
+        raise RuntimeError("kinesis unavailable")
+
+    sleeps = 0
+
+    async def stop_after_retry(_interval: int) -> None:
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps > 1:
+            raise asyncio.CancelledError
+
+    async def run_inline(function, *args):
+        return function(*args)
+
+    monkeypatch.setattr(processor, "_handle_ticks", fail_batch)
+    monkeypatch.setattr(asyncio, "sleep", stop_after_retry)
+    monkeypatch.setattr(asyncio, "to_thread", run_inline)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(processor.run_forever())
+
+    assert calls == [[{"coin": "BTC"}]]
+    assert queue.empty()
 
 
 def test_publish_to_kinesis_uses_json_bytes_and_detects_partial_failure(
