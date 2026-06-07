@@ -1,6 +1,8 @@
 import os
 from dataclasses import dataclass
 
+from crypto_arbitrage_aws.database import DatabaseSettings
+
 
 def required_env(name: str) -> str:
     value = os.environ.get(name)
@@ -20,14 +22,14 @@ class PollerSettings:
 
 @dataclass(frozen=True)
 class ProcessorSettings:
-    db_dsn: str
+    database: DatabaseSettings
     s3_bucket: str
     max_price_age_seconds: int
 
     @classmethod
     def from_env(cls) -> "ProcessorSettings":
         return cls(
-            db_dsn=required_env("DB_DSN"),
+            database=DatabaseSettings.from_env(require_postgres=True),
             s3_bucket=required_env("S3_BUCKET"),
             max_price_age_seconds=int(os.environ.get("MAX_PRICE_AGE_SECONDS", "120")),
         )

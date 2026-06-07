@@ -6,8 +6,8 @@ from crypto_arbitrage_aws.poller import (
 )
 from crypto_arbitrage_aws.processor import (
     ARBITRAGE_THRESHOLD_PCT,
-    DB_DSN,
     DB_PATH,
+    DB_SETTINGS,
     DB_TYPE,
     get_connection,
     process_persistent_tick_batch,
@@ -45,5 +45,5 @@ def main() -> None:
             f"  |  spread: {opportunity['spread_pct']:.4f}%"
         )
 
-    destination = DB_PATH if DB_TYPE == "sqlite" else DB_DSN
+    destination = DB_PATH if DB_TYPE == "sqlite" else DB_SETTINGS.host
     print(f"\n  Saved to DB ({DB_TYPE}: {destination})")

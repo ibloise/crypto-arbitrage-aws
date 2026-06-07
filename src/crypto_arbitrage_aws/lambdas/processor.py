@@ -1,6 +1,7 @@
 from functools import lru_cache
 
 from crypto_arbitrage_aws.contracts import ticks_from_kinesis_event
+from crypto_arbitrage_aws.database import connect_postgres
 from crypto_arbitrage_aws.lambdas.config import ProcessorSettings
 from crypto_arbitrage_aws.processor import (
     process_persistent_tick_batch,
@@ -20,18 +21,12 @@ def _s3_client():
     return boto3.client("s3")
 
 
-def _connect_postgres(dsn: str):
-    import psycopg2
-
-    return psycopg2.connect(dsn)
-
-
 def lambda_handler(event, context):
     settings = _settings()
     ticks = ticks_from_kinesis_event(event)
     save_raw_ticks_to_s3(ticks, settings.s3_bucket, _s3_client())
 
-    conn = _connect_postgres(settings.db_dsn)
+    conn = connect_postgres(settings.database)
     try:
         opportunities = process_persistent_tick_batch(
             ticks,

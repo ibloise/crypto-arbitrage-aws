@@ -13,6 +13,7 @@ dependencies = []
 [project.optional-dependencies]
 poller = ["boto3", "requests"]
 processor = ["boto3", "psycopg2-binary"]
+init-db = ["psycopg2-binary"]
 collector = ["boto3", "requests", "websockets"]
 dashboard = ["pandas", "psycopg2-binary", "streamlit", "streamlit-autorefresh"]
 local = [

@@ -12,11 +12,22 @@ ROOT = Path(__file__).resolve().parents[1]
 SOURCE_PACKAGE = ROOT / "src" / "crypto_arbitrage_aws"
 
 SERVICES = {
+    "init-db": {
+        "requirements": ROOT / "deploy" / "lambdas" / "init-db-requirements.txt",
+        "modules": [
+            "__init__.py",
+            "database.py",
+            "lambdas/__init__.py",
+            "lambdas/config.py",
+            "lambdas/init_db.py",
+        ],
+    },
     "poller": {
         "requirements": ROOT / "deploy" / "lambdas" / "poller-requirements.txt",
         "modules": [
             "__init__.py",
             "contracts.py",
+            "database.py",
             "kinesis.py",
             "poller.py",
             "lambdas/__init__.py",
@@ -29,6 +40,7 @@ SERVICES = {
         "modules": [
             "__init__.py",
             "contracts.py",
+            "database.py",
             "paths.py",
             "processor.py",
             "lambdas/__init__.py",
@@ -80,7 +92,11 @@ def create_zip(staging: Path, output: Path) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(staging.rglob("*")):
-            if path.is_file():
+            if (
+                path.is_file()
+                and "__pycache__" not in path.parts
+                and path.suffix != ".pyc"
+            ):
                 archive.write(path, path.relative_to(staging))
 
 

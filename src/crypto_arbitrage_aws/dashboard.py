@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 from streamlit_autorefresh import st_autorefresh
 
+from crypto_arbitrage_aws.database import DatabaseSettings, connect_postgres
 from crypto_arbitrage_aws.paths import PROJECT_ROOT
 
 # ---------------------------------------------------------------------------
@@ -13,9 +14,9 @@ from crypto_arbitrage_aws.paths import PROJECT_ROOT
 # DB_PATH anchored to the project directory so Streamlit finds the right file
 # regardless of where it is launched from.
 # ---------------------------------------------------------------------------
-DB_TYPE                 = os.environ.get("DB_TYPE", "sqlite")
+DB_SETTINGS             = DatabaseSettings.from_env()
+DB_TYPE                 = DB_SETTINGS.db_type
 DB_PATH                 = os.environ.get("DB_PATH", str(PROJECT_ROOT / "arbitrage.db"))
-DB_DSN                  = os.environ.get("DB_DSN", "")
 REFRESH_INTERVAL        = int(os.environ.get("REFRESH_INTERVAL", "30"))
 ARBITRAGE_THRESHOLD_PCT = float(os.environ.get("ARBITRAGE_THRESHOLD_PCT", "0.5"))
 
@@ -32,8 +33,7 @@ st.set_page_config(
 
 def get_connection():
     if DB_TYPE == "postgres":
-        import psycopg2
-        return psycopg2.connect(DB_DSN)
+        return connect_postgres(DB_SETTINGS)
     return sqlite3.connect(DB_PATH)
 
 

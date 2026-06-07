@@ -6,6 +6,7 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from .database import DatabaseSettings, connect_postgres
 from .paths import PROJECT_ROOT
 
 # ---------------------------------------------------------------------------
@@ -17,9 +18,9 @@ from .paths import PROJECT_ROOT
 ARBITRAGE_THRESHOLD_PCT = float(os.environ.get("ARBITRAGE_THRESHOLD_PCT", "0.3"))
 MAX_PRICE_AGE_SECONDS = int(os.environ.get("MAX_PRICE_AGE_SECONDS", "120"))
 
-DB_TYPE      = os.environ.get("DB_TYPE", "sqlite")
+DB_SETTINGS  = DatabaseSettings.from_env()
+DB_TYPE      = DB_SETTINGS.db_type
 DB_PATH      = os.environ.get("DB_PATH", str(PROJECT_ROOT / "arbitrage.db"))
-DB_DSN       = os.environ.get("DB_DSN", "")
 
 S3_BUCKET    = os.environ.get("S3_BUCKET", "")
 RAW_DATA_DIR = os.environ.get("RAW_DATA_DIR", str(PROJECT_ROOT / "data" / "raw_ticks"))
@@ -31,8 +32,7 @@ RAW_DATA_DIR = os.environ.get("RAW_DATA_DIR", str(PROJECT_ROOT / "data" / "raw_t
 
 def get_connection():
     if DB_TYPE == "postgres":
-        import psycopg2
-        return psycopg2.connect(DB_DSN)
+        return connect_postgres(DB_SETTINGS)
     return sqlite3.connect(DB_PATH)
 
 

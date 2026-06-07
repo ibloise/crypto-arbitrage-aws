@@ -3,7 +3,9 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from crypto_arbitrage_aws import processor as processor_module
 from crypto_arbitrage_aws.contracts import make_tick, tick_to_kinesis_record
+from crypto_arbitrage_aws.database import DatabaseSettings
 from crypto_arbitrage_aws.lambdas import processor as lambda_processor
 from crypto_arbitrage_aws.processor import (
     detect_arbitrage,
@@ -12,6 +14,29 @@ from crypto_arbitrage_aws.processor import (
     save_raw_ticks,
     upsert_latest_prices,
 )
+
+
+def test_processor_postgres_connection_uses_common_database_settings(monkeypatch) -> None:
+    settings = DatabaseSettings(
+        db_type="postgres",
+        host="database.internal",
+        port=5433,
+        name="arbitrage",
+        user="app",
+        password="secret",
+    )
+    connection = object()
+    calls = []
+    monkeypatch.setattr(processor_module, "DB_TYPE", "postgres")
+    monkeypatch.setattr(processor_module, "DB_SETTINGS", settings)
+    monkeypatch.setattr(
+        processor_module,
+        "connect_postgres",
+        lambda received: calls.append(received) or connection,
+    )
+
+    assert processor_module.get_connection() is connection
+    assert calls == [settings]
 
 
 def test_detect_arbitrage_returns_highest_spread_route() -> None:
@@ -133,8 +158,8 @@ def test_lambda_processor_consumes_kinesis_json_contract(monkeypatch) -> None:
 
     monkeypatch.setattr(
         lambda_processor,
-        "_connect_postgres",
-        lambda dsn: FakeConnection(),
+        "connect_postgres",
+        lambda settings: FakeConnection(),
     )
     monkeypatch.setattr(
         lambda_processor,
@@ -151,7 +176,10 @@ def test_lambda_processor_consumes_kinesis_json_contract(monkeypatch) -> None:
     )
 
     monkeypatch.setattr(lambda_processor, "_s3_client", lambda: object())
-    monkeypatch.setenv("DB_DSN", "postgresql://example")
+    monkeypatch.setenv("DB_TYPE", "postgres")
+    monkeypatch.setenv("DB_HOST", "database.internal")
+    monkeypatch.setenv("DB_USER", "app")
+    monkeypatch.setenv("DB_PASSWORD", "secret")
     monkeypatch.setenv("S3_BUCKET", "raw-ticks")
     lambda_processor._settings.cache_clear()
 
