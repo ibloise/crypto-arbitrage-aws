@@ -148,6 +148,12 @@ El collector WebSocket usa una clase base para gestionar conexión, reconexión
 y decodificación. Cada exchange implementa únicamente su URL, suscripción y
 normalización, y emite dicts que cumplen el contrato JSON común.
 
+El Poller REST sigue el mismo patrón: `RestClient` concentra endpoint y
+peticiones HTTP, `ExchangeRestClient` define la interfaz de disponibilidad y
+precio, y cada exchange implementa únicamente sus rutas y normalización. Las
+funciones públicas del Poller actúan como orquestadores concurrentes y aíslan
+los fallos de cada cliente.
+
 Los endpoints WebSocket pueden sustituirse mediante variables de entorno,
 manteniendo los endpoints públicos actuales como valor por defecto:
 
@@ -193,6 +199,7 @@ python -m pytest
 Cada servicio se puede instalar con sus dependencias aisladas:
 
 ```bash
+python -m pip install ".[init-db]"    # Lambda Init DB
 python -m pip install ".[poller]"      # Lambda Poller
 python -m pip install ".[processor]"   # Lambda Processor
 python -m pip install ".[collector]"   # EC2 WebSocket Collector
@@ -202,6 +209,7 @@ python -m pip install ".[dashboard]"   # EC2 Streamlit Dashboard
 Los handlers para Lambda son:
 
 ```text
+crypto_arbitrage_aws.lambdas.init_db.lambda_handler
 crypto_arbitrage_aws.lambdas.poller.lambda_handler
 crypto_arbitrage_aws.lambdas.processor.lambda_handler
 ```
@@ -214,7 +222,7 @@ local.
 Los ZIPs independientes se generan con:
 
 ```bash
-python tools/build_lambdas.py all
+./scripts/build_lambdas.sh
 ```
 
 Consulta `deploy/lambdas/README.md` para un resumen de los artefactos Lambda.
@@ -287,7 +295,7 @@ Utiliza la misma VPC para ambas EC2, Lambda y RDS. RDS debe permanecer privado.
 |---|---|---|
 | `sg-collector` | TCP 22 únicamente desde tu IP | EC2 Collector |
 | `sg-dashboard` | TCP 22 y 8501 desde IPs autorizadas | EC2 Dashboard |
-| `sg-lambda` | Ninguna | Lambda Processor |
+| `sg-lambda` | Ninguna | Lambdas Init DB y Processor |
 | `sg-rds` | TCP 5432 desde `sg-dashboard` y `sg-lambda` | RDS PostgreSQL |
 
 Mantén la salida predeterminada permitida. No abras SSH, PostgreSQL ni
@@ -323,29 +331,38 @@ lifecycle que elimine objetos después de 7 días.
 1. Crea una instancia pequeña, Single-AZ y privada en la misma VPC.
 2. Desactiva protección contra borrado y usa una retención de backups corta.
 3. Crea la base de datos y el usuario de aplicación.
-4. Ejecuta [`schema.sql`](schema.sql).
-5. Permite conexiones desde `sg-dashboard` y `sg-lambda`.
+4. Permite conexiones desde `sg-dashboard` y `sg-lambda`.
+5. Invoca Lambda Init DB para crear el schema.
 
-El DSN apunta directamente al endpoint RDS:
+Como alternativa local, el mismo schema puede inicializarse con
+[`schema.sql`](schema.sql).
+
+Los servicios reciben la conexión mediante una interfaz común:
 
 ```text
-postgresql://<user>:<password>@<rds-endpoint>:5432/<database>
+DB_TYPE=postgres
+DB_HOST=<rds-endpoint>
+DB_PORT=5432
+DB_NAME=postgres
+DB_USER=<database-user>
+DB_PASSWORD=<database-password>
 ```
 
-Puede almacenarse como variable de entorno de Lambda y en el archivo privado
-de la EC2 Dashboard. No incluyas el DSN en Git.
+Puede almacenarse en las variables de entorno de Lambda y en el archivo
+privado de la EC2 Dashboard. No incluyas las credenciales en Git.
 
 ### Construcción de Lambdas
 
 Desde la raíz:
 
 ```bash
-python tools/build_lambdas.py all
+./scripts/build_lambdas.sh
 ```
 
 Genera artefactos Linux para Lambda Python 3.12 x86_64:
 
 ```text
+dist/lambdas/init-db.zip
 dist/lambdas/poller.zip
 dist/lambdas/processor.zip
 ```
@@ -353,8 +370,37 @@ dist/lambdas/processor.zip
 Para ARM64:
 
 ```bash
-python tools/build_lambdas.py all --platform manylinux2014_aarch64
+./scripts/build_lambdas.sh all --platform manylinux2014_aarch64
 ```
+
+#### Lambda Init DB
+
+Esta Lambda inicializa RDS PostgreSQL después de crear la instancia. Se invoca
+manualmente una vez y puede repetirse porque todas las operaciones del schema
+son idempotentes.
+
+| Campo | Valor |
+|---|---|
+| Runtime | Python 3.12 |
+| Handler | `crypto_arbitrage_aws.lambdas.init_db.lambda_handler` |
+| Timeout inicial | 30 segundos |
+| VPC | Subredes con acceso a RDS |
+| Trigger | Ninguno; invocación manual |
+
+Variables:
+
+```text
+DB_TYPE=postgres
+DB_HOST=<rds-endpoint>
+DB_PORT=5432
+DB_NAME=postgres
+DB_USER=<database-user>
+DB_PASSWORD=<database-password>
+```
+
+Configura `sg-rds` para aceptar TCP 5432 desde el security group de esta
+Lambda. La función no necesita permisos IAM sobre Kinesis o S3. Tras una
+ejecución exitosa, puede eliminarse para reducir recursos temporales.
 
 #### Lambda Processor
 
@@ -369,7 +415,12 @@ python tools/build_lambdas.py all --platform manylinux2014_aarch64
 Variables:
 
 ```text
-DB_DSN=postgresql://...@<rds-endpoint>:5432/...
+DB_TYPE=postgres
+DB_HOST=<rds-endpoint>
+DB_PORT=5432
+DB_NAME=postgres
+DB_USER=<database-user>
+DB_PASSWORD=<database-password>
 S3_BUCKET=<raw-bucket>
 MAX_PRICE_AGE_SECONDS=120
 ARBITRAGE_THRESHOLD_PCT=0.3
@@ -397,6 +448,24 @@ desplegarse como fallback:
 | Variable | `KINESIS_STREAM=<stream-name>` |
 | IAM | `kinesis:PutRecords` sobre el stream |
 | Trigger | EventBridge Scheduler |
+
+Endpoints REST opcionales:
+
+```text
+COINGECKO_REST_URL=https://api.coingecko.com/api/v3
+BINANCE_REST_URL=https://api.binance.com
+KRAKEN_REST_URL=https://api.kraken.com
+COINBASE_PRODUCTS_REST_URL=https://api.exchange.coinbase.com
+COINBASE_PRICE_REST_URL=https://api.coinbase.com
+BYBIT_REST_URL=https://api.bybit.com
+ENABLED_EXCHANGES=binance,kraken,coinbase,bybit
+```
+
+Los valores mostrados son los defaults. Pueden apuntarse a proxies o endpoints
+alternativos sin modificar el código. Si CoinGecko falla se utiliza un universo
+local de respaldo; si falla la disponibilidad o el precio de un exchange, el
+Poller continúa publicando ticks de los proveedores restantes.
+`ENABLED_EXCHANGES` permite excluir proveedores antes de realizar peticiones.
 
 ### EC2 Collector
 
@@ -472,7 +541,11 @@ Archivo `/etc/crypto-arbitrage/dashboard.env`:
 
 ```text
 DB_TYPE=postgres
-DB_DSN=postgresql://<user>:<password>@<rds-endpoint>:5432/<database>
+DB_HOST=<rds-endpoint>
+DB_PORT=5432
+DB_NAME=postgres
+DB_USER=<database-user>
+DB_PASSWORD=<database-password>
 REFRESH_INTERVAL=30
 ARBITRAGE_THRESHOLD_PCT=0.5
 ```
@@ -512,12 +585,16 @@ Accede mediante `http://<ec2-public-ip>:8501` desde una IP permitida.
 | EC2 Collector | `KINESIS_STREAM` | Sí en AWS | Stream de salida |
 | EC2 Collector | `BATCH_INTERVAL` | No | Segundos por batch; default `30` |
 | EC2 Collector | `*_WS_URL` | No | Overrides geográficos de WebSocket |
-| Lambda Processor | `DB_DSN` | Sí | DSN del endpoint RDS |
+| Lambda Poller | `*_REST_URL` | No | Overrides de endpoints REST |
+| Servicios PostgreSQL | `DB_TYPE` | Sí en AWS | Usar `postgres` |
+| Servicios PostgreSQL | `DB_HOST` | Sí | Endpoint RDS |
+| Servicios PostgreSQL | `DB_PORT` | No | Puerto; default `5432` |
+| Servicios PostgreSQL | `DB_NAME` | No | Base de datos; default `postgres` |
+| Servicios PostgreSQL | `DB_USER` | Sí | Usuario PostgreSQL |
+| Servicios PostgreSQL | `DB_PASSWORD` | Sí | Contraseña PostgreSQL |
 | Lambda Processor | `S3_BUCKET` | Sí | Bucket de raw ticks |
 | Lambda Processor | `MAX_PRICE_AGE_SECONDS` | No | Frescura máxima; default `120` |
 | Lambda Processor | `ARBITRAGE_THRESHOLD_PCT` | No | Spread mínimo; default `0.3` |
-| EC2 Dashboard | `DB_TYPE` | Sí | Usar `postgres` |
-| EC2 Dashboard | `DB_DSN` | Sí | DSN del endpoint RDS |
 | EC2 Dashboard | `REFRESH_INTERVAL` | No | Refresco; default `30` |
 
 ### Validación end-to-end
@@ -533,16 +610,17 @@ Accede mediante `http://<ec2-public-ip>:8501` desde una IP permitida.
 
 1. VPC, endpoint S3 y security groups.
 2. S3.
-3. RDS PostgreSQL y schema.
+3. RDS PostgreSQL.
 4. Kinesis.
-5. Lambda Processor y event source mapping.
-6. EC2 Collector.
-7. EC2 Dashboard.
-8. Validación end-to-end.
+5. Invocación manual de Init DB.
+6. Lambda Processor y event source mapping.
+7. EC2 Collector.
+8. EC2 Dashboard.
+9. Validación end-to-end.
 
 ### Apagado tras la evaluación
 
-1. Elimina event source mapping y Lambda.
+1. Elimina event source mapping y Lambdas.
 2. Elimina Kinesis Data Stream.
 3. Elimina RDS sin snapshot final si no necesitas los datos.
 4. Elimina ambas EC2 y sus volúmenes EBS.

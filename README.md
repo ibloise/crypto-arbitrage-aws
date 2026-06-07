@@ -48,6 +48,9 @@ crypto-arbitrage-dashboard    Inicia el dashboard Streamlit
 ```
 
 En local, el processor utiliza SQLite y guarda los ticks crudos bajo `data/`.
+Los endpoints REST y WebSocket pueden sobrescribirse mediante variables de
+entorno; si un endpoint REST falla, el Poller continúa con los proveedores
+disponibles.
 
 ## Tests
 
@@ -61,6 +64,7 @@ El despliegue académico recomendado utiliza:
 
 - Una EC2 para el collector WebSocket.
 - Kinesis Data Streams como bus de eventos.
+- Lambda Init DB para inicializar el schema de PostgreSQL.
 - Lambda Processor para detectar arbitraje.
 - RDS PostgreSQL para resultados y últimos precios.
 - S3 para ticks crudos.
@@ -72,8 +76,10 @@ para configuración, IAM, servicios `systemd` y orden de eliminación.
 Los ZIP de Lambda se construyen con:
 
 ```bash
-python tools/build_lambdas.py all
+./scripts/build_lambdas.sh
 ```
+
+Esto genera `init-db.zip`, `poller.zip` y `processor.zip`.
 
 ## Estructura
 
