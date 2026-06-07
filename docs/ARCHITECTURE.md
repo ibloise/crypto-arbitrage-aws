@@ -192,6 +192,38 @@ Para ARM64:
 ./scripts/build_lambdas.sh all --platform manylinux2014_aarch64
 ```
 
+`scripts/build_lambdas.sh` es un wrapper cómodo: localiza la raíz del
+repositorio, usa `python` o `PYTHON_BIN` y reenvía los argumentos a
+`tools/build_lambdas.py`, donde se encuentra la lógica de construcción.
+
+El builder Python también puede ejecutarse directamente:
+
+```bash
+python tools/build_lambdas.py all
+python tools/build_lambdas.py init-db
+python tools/build_lambdas.py poller
+python tools/build_lambdas.py processor
+```
+
+Opciones disponibles:
+
+```text
+--output-dir <ruta>       Directorio de salida; default: dist/lambdas
+--platform <plataforma>   Default: manylinux2014_x86_64
+--python-version <versión> Default: 3.12
+--skip-dependencies       Genera ZIPs sin instalar dependencias
+```
+
+Por ejemplo, para generar solo Poller en otro directorio:
+
+```bash
+python tools/build_lambdas.py poller --output-dir /tmp/lambdas
+```
+
+Usa `--skip-dependencies` únicamente para comprobar rápidamente el contenido
+propio del paquete; esos ZIPs normalmente no son desplegables porque omiten
+dependencias como `psycopg2` o `requests`.
+
 #### Lambda Init DB
 
 Esta Lambda inicializa RDS PostgreSQL después de crear la instancia. Se invoca
