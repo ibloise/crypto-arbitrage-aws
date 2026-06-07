@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crypto-arbitrage-aws"
+version = "0.1.0"
+description = "Crypto arbitrage collector and processor for local and AWS deployments"
+readme = "ARCHITECTURE.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+poller = ["boto3", "requests"]
+processor = ["boto3", "psycopg2-binary"]
+collector = ["boto3", "requests", "websockets"]
+dashboard = ["pandas", "psycopg2-binary", "streamlit", "streamlit-autorefresh"]
+local = [
+    "pandas",
+    "requests",
+    "streamlit",
+    "streamlit-autorefresh",
+    "websockets",
+]
+aws = ["boto3", "psycopg2-binary", "requests", "websockets"]
+dev = ["pytest", "requests", "websockets"]
+
+[project.scripts]
+crypto-arbitrage = "crypto_arbitrage_aws.scripts.run_local:main"
+crypto-arbitrage-dashboard = "crypto_arbitrage_aws.scripts.dashboard:main"
+crypto-arbitrage-poller = "crypto_arbitrage_aws.scripts.poller:main"
+crypto-arbitrage-processor = "crypto_arbitrage_aws.scripts.processor:main"
+crypto-arbitrage-ws = "crypto_arbitrage_aws.scripts.ws_collector:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
