@@ -20,7 +20,7 @@ mantiene los últimos precios por exchange, detecta spreads e implementa
 idempotencia para soportar reintentos de Kinesis.
 
 La explicación técnica, decisiones de diseño y guía completa de despliegue
-están en [ARCHITECTURE.md](ARCHITECTURE.md).
+están en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Desarrollo local
 
@@ -70,7 +70,7 @@ El despliegue académico recomendado utiliza:
 - S3 para ticks crudos.
 - Una segunda EC2 para el dashboard Streamlit.
 
-Consulta la sección [Despliegue temporal en AWS](ARCHITECTURE.md#despliegue-temporal-en-aws)
+Consulta la sección [Despliegue temporal en AWS](docs/ARCHITECTURE.md#despliegue-temporal-en-aws)
 para configuración, IAM, servicios `systemd` y orden de eliminación.
 
 Los ZIP de Lambda se construyen con:
@@ -89,5 +89,5 @@ tests/                      Tests unitarios
 deploy/lambdas/             Requisitos y notas de Lambda
 tools/                      Herramientas de construcción
 schema.sql                  Schema PostgreSQL
-ARCHITECTURE.md             Arquitectura y despliegue
+docs/ARCHITECTURE.md        Arquitectura y despliegue
 ```

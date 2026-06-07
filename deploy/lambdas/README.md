@@ -86,4 +86,4 @@ El Processor, Init DB y Dashboard comparten las variables `DB_TYPE`, `DB_HOST`,
 ni archivos locales cuando se invoca mediante su adaptador Lambda.
 
 La guía completa se encuentra en
-[`ARCHITECTURE.md`](../../ARCHITECTURE.md#despliegue-temporal-en-aws).
+[`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md#despliegue-temporal-en-aws).
