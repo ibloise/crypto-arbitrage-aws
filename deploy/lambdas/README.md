@@ -35,7 +35,10 @@ de argumentos a `tools/build_lambdas.py`.
 - Red: VPC/subredes/security group con acceso TCP 5432 a RDS
 
 La función crea el schema de forma idempotente y puede invocarse de nuevo.
-No necesita permisos IAM de Kinesis o S3.
+Después de subir el ZIP, ajusta **Runtime settings > Handler** al valor
+indicado. Configura también la VPC de RDS, subredes, security group y todas las
+variables `DB_*`; definir únicamente `DB_HOST` no permite alcanzar un RDS
+privado. No necesita permisos IAM de Kinesis o S3.
 
 ## Poller
 
@@ -55,6 +58,12 @@ restringidos antes de realizar peticiones.
 Usa `LOG_LEVEL=DEBUG` temporalmente para registrar URL final, parámetros,
 duración y status HTTP de cada petición.
 
+Existe una incidencia conocida con Binance en algunas regiones AWS: su endpoint
+REST predeterminado puede estar restringido o devolver HTTP 451. Configura
+`BINANCE_REST_URL` con un endpoint accesible o excluye Binance mediante
+`ENABLED_EXCHANGES`. Estas variables pertenecen a la configuración de Lambda;
+EventBridge únicamente programa sus invocaciones.
+
 ## Processor
 
 - ZIP: `processor.zip`
@@ -67,6 +76,10 @@ duración y status HTTP de cada petición.
 - IAM: lectura de Kinesis y `s3:PutObject` sobre `s3://<bucket>/raw_ticks/*`
 - Trigger: Kinesis event source mapping
 - Red: VPC/subredes/security groups con acceso directo a RDS y endpoint S3
+
+Después de subir el ZIP, ajusta **Runtime settings > Handler** al valor
+indicado y configura VPC, subredes, security group y variables `DB_*`, igual
+que en Init DB.
 
 El Processor, Init DB y Dashboard comparten las variables `DB_TYPE`, `DB_HOST`,
 `DB_PORT`, `DB_NAME`, `DB_USER` y `DB_PASSWORD`. El processor nunca usa SQLite
